@@ -1,24 +1,22 @@
 // Multiplayer Snake.io Node.js/socket.io backend (multi-food, lag optimized)
+// Now spawns 7 foods per room
 const express = require('express');
 const app = express();
 const http = require('http').Server(app);
 const io = require('socket.io')(http, { cors: { origin: '*' } });
 
 const GRID_SIZE = 20;
-const FOOD_COUNT = 4; // Always keep 4 separate food items
+const FOOD_COUNT = 7; // <-- updated to 7 foods
 
 let rooms = {};
 
-function randomEmptyCell(occupied=[]) {
+function randomEmptyCell(occupied = []) {
   let pos;
-  let failsafe = 0;
+  let tries = 0;
   do {
     pos = { x: Math.floor(Math.random() * GRID_SIZE), y: Math.floor(Math.random() * GRID_SIZE) };
-    failsafe++;
-  } while (
-    occupied.some(o => o.x === pos.x && o.y === pos.y)
-    && failsafe < 100
-  );
+    tries++;
+  } while (occupied.some(o => o.x === pos.x && o.y === pos.y) && tries < 200);
   return pos;
 }
 
@@ -26,10 +24,16 @@ function initFoods(snakes) {
   let occupied = [];
   snakes.forEach(s => occupied = occupied.concat(s));
   let foods = [];
-  while (foods.length < FOOD_COUNT) {
-    let pos = randomEmptyCell(foods.concat(occupied));
-    foods.push(pos);
+  let safety = 0;
+  while (foods.length < FOOD_COUNT && safety < 500) {
+    const pos = randomEmptyCell(foods.concat(occupied));
+    // avoid duplicates
+    if (!foods.some(f => f.x === pos.x && f.y === pos.y)) {
+      foods.push(pos);
+    }
+    safety++;
   }
+  // If safety limit hit and foods < FOOD_COUNT, it's okay — return whatever we have
   return foods;
 }
 
@@ -45,7 +49,7 @@ io.on('connection', socket => {
         foods: []
       };
     }
-    // Setup player state
+    // Initialize player
     rooms[room].players[socket.id] = {
       id: socket.id,
       name: name,
@@ -54,16 +58,16 @@ io.on('connection', socket => {
       dir: 'right',
       moveTime: 0
     };
-    // If new or empty, generate foods
-    let snakes = Object.values(rooms[room].players).map(p => p.snake).flat();
+    // Ensure foods exist
+    const snakesFlat = Object.values(rooms[room].players).map(p => p.snake).flat();
     if (rooms[room].foods.length < FOOD_COUNT) {
-      rooms[room].foods = initFoods(snakes);
+      rooms[room].foods = initFoods(snakesFlat);
     }
     socket.join(room);
     io.to(room).emit('gameState', getState(room));
   });
 
-  // Rate-limit moves (optional, for lag/collisions)
+  // Basic rate limiter to reduce flood
   function canMove(player) {
     const now = Date.now();
     if (now - player.moveTime < 60) return false;
@@ -75,24 +79,26 @@ io.on('connection', socket => {
     if (!room || !rooms[room] || !rooms[room].players[socket.id]) return;
     const player = rooms[room].players[socket.id];
     if (!canMove(player)) return;
-    player.snake = data.snake;
-    player.score = data.score;
+    // Trust server-side snake assignment coming from client, but we do not compute movement here.
+    player.snake = Array.isArray(data.snake) ? data.snake : player.snake;
+    player.score = typeof data.score === 'number' ? data.score : player.score;
     io.to(room).emit('gameState', getState(room));
-  });
-
-  socket.on('move', data => {
-    // Not used in this model—movement is on-tap, move logic is on client.
   });
 
   socket.on('eatFood', coords => {
     if (!room || !rooms[room]) return;
-    let foods = rooms[room].foods;
-    // Remove food at given coords
+    let foods = rooms[room].foods || [];
+    // Remove the eaten food (if present)
     foods = foods.filter(f => !(f.x === coords.x && f.y === coords.y));
-    // Spawn new food in an empty cell
-    let snakes = Object.values(rooms[room].players).map(p => p.snake).flat();
-    while (foods.length < FOOD_COUNT) {
-      foods.push(randomEmptyCell(foods.concat(snakes)));
+    // Refill up to FOOD_COUNT, avoiding occupied cells
+    const snakesFlat = Object.values(rooms[room].players).map(p => p.snake).flat();
+    let safety = 0;
+    while (foods.length < FOOD_COUNT && safety < 500) {
+      const newPos = randomEmptyCell(foods.concat(snakesFlat));
+      if (!foods.some(f => f.x === newPos.x && f.y === newPos.y)) {
+        foods.push(newPos);
+      }
+      safety++;
     }
     rooms[room].foods = foods;
     io.to(room).emit('gameState', getState(room));
@@ -107,9 +113,9 @@ io.on('connection', socket => {
   });
 
   socket.on('disconnect', () => {
-    if (!room || !rooms[room] || !rooms[room].players[socket.id]) return;
+    if (!room || !rooms[room]) return;
     delete rooms[room].players[socket.id];
-    // Clean up empty room
+    // Remove empty room
     if (Object.keys(rooms[room].players).length === 0) {
       delete rooms[room];
     } else {
@@ -126,6 +132,5 @@ function getState(room) {
   };
 }
 
-// Accept PORT env var (for Render)
 const port = process.env.PORT || 3000;
 http.listen(port, () => console.log('Server running on port ' + port));
