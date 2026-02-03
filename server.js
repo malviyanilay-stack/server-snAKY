@@ -1,5 +1,5 @@
 // SNAKEY SNAKEY Multiplayer Server
-// 50x50 grid, 7 foods, disco top scorer, custom player color, perfect join/leave
+// 50x50 grid, 7 foods absolute respawn, top scorer disco, color by nickname
 
 const express = require('express');
 const app = express();
@@ -27,19 +27,21 @@ function randomEmptyCell(occupied = []) {
   return pos;
 }
 
-function initFoods(snakes) {
-  let occupied = [];
+function absoluteFoods(snakes, foods) {
+  // Ensure there are always FOOD_COUNT, never less
+  let occupied = foods.slice();
   snakes.forEach(s => occupied = occupied.concat(s));
-  let foods = [];
+  let out = foods.slice();
   let safety = 0;
-  while (foods.length < FOOD_COUNT && safety < 1000) {
-    const pos = randomEmptyCell(foods.concat(occupied));
-    if (!foods.some(f => f.x === pos.x && f.y === pos.y)) {
-      foods.push(pos);
+  while (out.length < FOOD_COUNT && safety < 1000) {
+    const pos = randomEmptyCell(occupied);
+    if (!out.some(f => f.x === pos.x && f.y === pos.y)) {
+      out.push(pos);
+      occupied.push(pos);
     }
     safety++;
   }
-  return foods;
+  return out;
 }
 
 function hashNick(nick) {
@@ -76,9 +78,7 @@ io.on('connection', socket => {
       joined: Date.now()
     };
     const snakesFlat = Object.values(rooms[room].players).map(p => p.snake).flat();
-    if (rooms[room].foods.length < FOOD_COUNT) {
-      rooms[room].foods = initFoods(snakesFlat);
-    }
+    rooms[room].foods = absoluteFoods(snakesFlat, rooms[room].foods);
     socket.join(room);
     io.to(room).emit('gameState', getState(room));
   });
@@ -96,6 +96,9 @@ io.on('connection', socket => {
     if (!canMove(player)) return;
     player.snake = Array.isArray(data.snake) ? data.snake : player.snake;
     player.score = typeof data.score === 'number' ? data.score : player.score;
+    // Always respawn foods if fewer than FOOD_COUNT
+    const snakesFlat = Object.values(rooms[room].players).map(p => p.snake).flat();
+    rooms[room].foods = absoluteFoods(snakesFlat, rooms[room].foods);
     io.to(room).emit('gameState', getState(room));
   });
 
@@ -104,15 +107,7 @@ io.on('connection', socket => {
     let foods = rooms[room].foods || [];
     foods = foods.filter(f => !(f.x === coords.x && f.y === coords.y));
     const snakesFlat = Object.values(rooms[room].players).map(p => p.snake).flat();
-    let safety = 0;
-    while (foods.length < FOOD_COUNT && safety < 1000) {
-      const newPos = randomEmptyCell(foods.concat(snakesFlat));
-      if (!foods.some(f => f.x === newPos.x && f.y === newPos.y)) {
-        foods.push(newPos);
-      }
-      safety++;
-    }
-    rooms[room].foods = foods;
+    rooms[room].foods = absoluteFoods(snakesFlat, foods);
     io.to(room).emit('gameState', getState(room));
   });
 
@@ -121,6 +116,8 @@ io.on('connection', socket => {
     rooms[room].players[socket.id].score = 0;
     rooms[room].players[socket.id].snake = [{ x: centerCell.x, y: centerCell.y }];
     rooms[room].players[socket.id].dir = 'right';
+    const snakesFlat = Object.values(rooms[room].players).map(p => p.snake).flat();
+    rooms[room].foods = absoluteFoods(snakesFlat, rooms[room].foods);
     io.to(room).emit('gameState', getState(room));
   });
 
@@ -130,6 +127,8 @@ io.on('connection', socket => {
     if (Object.keys(rooms[room].players).length === 0) {
       delete rooms[room];
     } else {
+      const snakesFlat = Object.values(rooms[room].players).map(p => p.snake).flat();
+      rooms[room].foods = absoluteFoods(snakesFlat, rooms[room].foods);
       io.to(room).emit('gameState', getState(room));
     }
   });
