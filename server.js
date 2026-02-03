@@ -1,10 +1,12 @@
-// Multiplayer Snake.io backend (large map, respawn-center, 7 foods)
+// SNAKEY SNAKEY - Multiplayer Snake.io backend
+// 40x40 grid, 7 foods, custom player color by nickname, top scorer gets disco-glow
+
 const express = require('express');
 const app = express();
 const http = require('http').Server(app);
 const io = require('socket.io')(http, { cors: { origin: '*' } });
 
-const GRID_SIZE = 40; // <-- NOW 40x40!
+const GRID_SIZE = 40;
 const FOOD_COUNT = 7;
 const centerCell = { x: Math.floor(GRID_SIZE/2), y: Math.floor(GRID_SIZE/2) };
 
@@ -35,6 +37,16 @@ function initFoods(snakes) {
   return foods;
 }
 
+// Helper to consistently turn a nickname into a number
+function hashNick(nick) {
+  let hash = 0;
+  for(let i=0;i<nick.length;i++) {
+    hash = ((hash<<5)-hash) + nick.charCodeAt(i);
+    hash |=0;
+  }
+  return Math.abs(hash);
+}
+
 io.on('connection', socket => {
   let room, name;
 
@@ -47,13 +59,16 @@ io.on('connection', socket => {
         foods: []
       };
     }
+    // Avoid duplicate join
     rooms[room].players[socket.id] = {
       id: socket.id,
       name: name,
+      colorSeed: hashNick(name),
       snake: [Object.assign({}, centerCell)],
       score: 0,
       dir: 'right',
-      moveTime: 0
+      moveTime: 0,
+      joined: Date.now()
     };
     const snakesFlat = Object.values(rooms[room].players).map(p => p.snake).flat();
     if (rooms[room].foods.length < FOOD_COUNT) {
@@ -117,11 +132,32 @@ io.on('connection', socket => {
 
 function getState(room) {
   if (!rooms[room]) return {};
+  // Find the top-scorer (first by score, then by join time)
+  let bestPlayerId = null;
+  let maxScore = -1;
+  let earliest = Date.now()+100000;
+  for(let pid in rooms[room].players) {
+    let p = rooms[room].players[pid];
+    if (
+      p.score > maxScore ||
+      (p.score === maxScore && p.joined < earliest)
+    ) {
+      bestPlayerId = p.id;
+      maxScore = p.score;
+      earliest = p.joined;
+    }
+  }
+  // Mark which player is disco (can be none if no players)
+  let playerStates = {};
+  for(let pid in rooms[room].players) {
+    let p = rooms[room].players[pid];
+    playerStates[pid] = { ...p, disco: (pid === bestPlayerId)};
+  }
   return {
-    players: rooms[room].players,
+    players: playerStates,
     foods: rooms[room].foods
   };
 }
 
 const port = process.env.PORT || 3000;
-http.listen(port, () => console.log('Server running on port ' + port));
+http.listen(port, () => console.log('SNAKEY SNAKEY server running on port ' + port));
